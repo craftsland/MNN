@@ -61,6 +61,10 @@ extern void MNNPackForMatMul_B_RVV(float* destC, const float* sourceC, size_t h,
                                    bool transpose);
 extern void MNNQuantScaleFP32_RVV(float* absmax, float* quant_scale, float* dequant_scale, size_t thread, size_t batch);
 extern void MNNGetMatMulPackMode_RVV(int* eP, int* lP, int* hP);
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+extern void MNNQuantAttentionKey_RVV(int8_t* dst, const float* source, float* sumKey, float* maxKey, int32_t* params);
+extern void MNNQuantAttentionValue_RVV(int8_t* dst, const float* source, float* valueSum, int32_t* params);
+#endif
 void MNNAttentionMaskQK_RVV(float* qkPacked, const float* scale, size_t seqLen, size_t processedKvSeq, int pack,
                             int kvSeqLen, int kvoffset, int padKvSeqLen, const float* sinksPtr, const float* maskPtr,
                             size_t maskElementSize, bool scaleApplied, bool isLowerTriangular);
@@ -1590,11 +1594,21 @@ void MNNQuantAttentionKey(int8_t* dst, const float* source, float* sumKeyPtr, fl
                 int i = d / lP;
                 int j = d % lP;
 
+#if defined(__riscv)
+                // Match RVV at quantization ties independently of -ffp-contract.
+                float normalized = (keySrc[d + k * blockL] - maxKeyPtr[d + k * blockL] - minKey) / (maxKey - minKey);
+                int int8v = (int)roundf(fmaf(normalized, 255.0f, -128.0f));
+#else
                 int int8v = (int)(roundf((keySrc[d + k * blockL] - maxKeyPtr[d + k * blockL] - minKey) /
                                              (maxKey - minKey) * 255.0f -
                                          128.0f));
+#endif
                 weightDst[i * weightStride2 + inIndex * lP + j] = int8v;
+#if defined(__riscv)
+                sumKey += fmaf((float)int8v, scaleDst[inIndex], biasDst[inIndex]);
+#else
                 sumKey += (int8v * scaleDst[inIndex] + biasDst[inIndex]);
+#endif
             }
         }
         sumKeyPtr[outIndex * hP + inIndex] = sumKey;
@@ -1652,7 +1666,11 @@ void MNNQuantAttentionValue(int8_t* dst, const float* source, float* valueSum, i
                 biasPtr[0] = dMax;
             } else {
                 float scale = range / 255.f;
+#if defined(__riscv)
+                float bias = fmaf(scale, 128.f, dMin);
+#else
                 float bias = range / 255.f * 128.f + dMin;
+#endif
                 scalePtr[0] = scale;
                 biasPtr[0] = bias;
             }
@@ -1692,12 +1710,20 @@ void MNNQuantAttentionValue(int8_t* dst, const float* source, float* valueSum, i
                            (kvSeqIndx % flashAttentionBlockKv) / lP * weightStride2 +
                            (kvSeqIndx % flashAttentionBlockKv) % lP;
             float xf = sourceFp32[s * srcStride0 + d + kvHeadIdx * headDim];
+#if defined(__riscv)
+            int8_t xq = ALIMAX(ALIMIN(127, static_cast<int32_t>(roundf(fmaf(xf, qscale, qbias)))), -128);
+#else
             int8_t xq = ALIMAX(ALIMIN(127, static_cast<int32_t>(roundf(xf * qscale + qbias))), -128);
+#endif
             dstBase[idxInner] = xq;
 
             // sum
             int idxSum = (kvSeqIndx / flashAttentionBlockKv) * ROUND_UP(headDim, hP);
+#if defined(__riscv)
+            sumBase[idxSum] += fmaf((float)xq, scaleBase[0], biasBase[0]);
+#else
             sumBase[idxSum] += ((float)xq * scaleBase[0] + biasBase[0]);
+#endif
         }
     }
 }
@@ -5217,6 +5243,10 @@ void MNNCoreFunctionInit() {
         gCoreFunction->MNNPackCUnitTransposeInt16 = MNNPackCUnitTransposeInt16_RVV;
         gCoreFunction->MNNUnpackCUnitTransposeInt16 = MNNUnpackCUnitTransposeInt16_RVV;
         MNNRvvInitializeFastPathFunctions(gCoreFunction);
+#ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+        gCoreFunction->MNNQuantAttentionKey = MNNQuantAttentionKey_RVV;
+        gCoreFunction->MNNQuantAttentionValue = MNNQuantAttentionValue_RVV;
+#endif
         gCoreFunction->MNNRankOneUpdate = MNNRankOneUpdate_RVV;
         gCoreFunction->MNNDualMatVec = MNNDualMatVec_RVV;
         gCoreFunction->MNNDecayRankOneUpdate = MNNDecayRankOneUpdate_RVV;
