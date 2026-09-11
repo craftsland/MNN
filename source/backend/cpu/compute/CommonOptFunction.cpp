@@ -77,6 +77,12 @@ extern void MNNUnpackCUnitTransposeInt16_RVV(int16_t*, const int16_t*, size_t, s
 namespace MNN {
 void MNNRvvInitializeFastPathFunctions(CoreFunctions* core);
 }
+extern void MNNRankOneUpdate_RVV(float* S, const float* k, const float* delta, size_t dk, size_t dv);
+extern void MNNDualMatVec_RVV(const float* S, const float* k, const float* q, float* out_k, float* out_q, size_t dk,
+                              size_t dv);
+extern void MNNDecayRankOneUpdate_RVV(float* S, const float* k, const float* delta, float decay, size_t dk, size_t dv);
+extern void MNNFusedGatedDelta_RVV(float* S, const float* k, const float* q, const float* v, float* out, float decay,
+                                   float beta, float kq, size_t dk, size_t dv);
 #endif
 
 #ifndef MNN_USE_SSE
@@ -4074,7 +4080,11 @@ static void MNNRankOneUpdateDefault(float* S, const float* k, const float* delta
         float k_val = k[i];
         float* row = S + i * dv;
         for (size_t j = 0; j < dv; ++j) {
+#if defined(__riscv)
+            row[j] = fmaf(k_val, delta[j], row[j]);
+#else
             row[j] += k_val * delta[j];
+#endif
         }
     }
 }
@@ -4088,8 +4098,17 @@ static void MNNDualMatVecDefault(const float* S, const float* k, const float* q,
         float q_val = q[i];
         const float* row = S + i * dv;
         for (size_t j = 0; j < dv; ++j) {
+#if defined(__riscv)
+            out_k[j] = fmaf(row[j], k_val, out_k[j]);
+#else
             out_k[j] += row[j] * k_val;
+#endif
+
+#if defined(__riscv)
+            out_q[j] = fmaf(row[j], q_val, out_q[j]);
+#else
             out_q[j] += row[j] * q_val;
+#endif
         }
     }
 }
@@ -4100,7 +4119,11 @@ static void MNNDecayRankOneUpdateDefault(float* S, const float* k, const float* 
         float k_val = k[i];
         float* row = S + i * dv;
         for (size_t j = 0; j < dv; ++j) {
+#if defined(__riscv)
+            row[j] = fmaf(decay, row[j], k_val * delta[j]);
+#else
             row[j] = decay * row[j] + k_val * delta[j];
+#endif
         }
     }
 }
@@ -4274,18 +4297,43 @@ static void MNNFusedGatedDeltaDefault(float* S, const float* k, const float* q, 
         float ok = 0.0f, oq = 0.0f;
         for (size_t i = 0; i < dk; ++i) {
             float s = S[i * dv + j];
+
+#if defined(__riscv)
+            ok = fmaf(s, k[i], ok);
+#else
             ok += s * k[i];
+#endif
+
+#if defined(__riscv)
+            oq = fmaf(s, q[i], oq);
+#else
             oq += s * q[i];
+#endif
         }
+
+#if defined(__riscv)
+        float delta_j = beta * fmaf(-decay, ok, v[j]);
+#else
         float delta_j = beta * (v[j] - decay * ok);
+#endif
         deltaBuf[j] = delta_j;
+
+#if defined(__riscv)
+        out[j] = fmaf(decay, oq, kq * delta_j);
+#else
         out[j] = decay * oq + kq * delta_j;
+#endif
     }
     for (size_t i = 0; i < dk; ++i) {
         float k_val = k[i];
         float* row = S + i * dv;
         for (size_t j = 0; j < dv; ++j) {
+
+#if defined(__riscv)
+            row[j] = fmaf(decay, row[j], k_val * deltaBuf[j]);
+#else
             row[j] = decay * row[j] + k_val * deltaBuf[j];
+#endif
         }
     }
 #endif
@@ -5165,6 +5213,10 @@ void MNNCoreFunctionInit() {
         gCoreFunction->MNNPackCUnitTransposeInt16 = MNNPackCUnitTransposeInt16_RVV;
         gCoreFunction->MNNUnpackCUnitTransposeInt16 = MNNUnpackCUnitTransposeInt16_RVV;
         MNNRvvInitializeFastPathFunctions(gCoreFunction);
+        gCoreFunction->MNNRankOneUpdate = MNNRankOneUpdate_RVV;
+        gCoreFunction->MNNDualMatVec = MNNDualMatVec_RVV;
+        gCoreFunction->MNNDecayRankOneUpdate = MNNDecayRankOneUpdate_RVV;
+        gCoreFunction->MNNFusedGatedDelta = MNNFusedGatedDelta_RVV;
 #ifdef MNN_LOW_MEMORY
         gCoreFunction->MNNAbsMax = MNNAbsMaxFP32_RVV;
         gCoreFunction->MNNDynamicQuant = MNNDynamicQuantFP32_RVV;
