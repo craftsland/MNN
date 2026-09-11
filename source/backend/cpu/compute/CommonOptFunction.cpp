@@ -61,6 +61,9 @@ extern void MNNPackForMatMul_B_RVV(float* destC, const float* sourceC, size_t h,
                                    bool transpose);
 extern void MNNQuantScaleFP32_RVV(float* absmax, float* quant_scale, float* dequant_scale, size_t thread, size_t batch);
 extern void MNNGetMatMulPackMode_RVV(int* eP, int* lP, int* hP);
+void MNNAttentionMaskQK_RVV(float* qkPacked, const float* scale, size_t seqLen, size_t processedKvSeq, int pack,
+                            int kvSeqLen, int kvoffset, int padKvSeqLen, const float* sinksPtr, const float* maskPtr,
+                            size_t maskElementSize, bool scaleApplied, bool isLowerTriangular);
 extern void MNNPackC4ForMatMul_A_RVV(float*, float const**, const int32_t*, const int32_t*);
 extern void MNNPackCUnit_RVV(float*, const float*, size_t, size_t, int*);
 extern void MNNUnpackCUnit_RVV(float*, const float*, size_t, size_t, int*);
@@ -5199,6 +5202,7 @@ void MNNCoreFunctionInit() {
         gCoreFunction->MNNPackedMatMulRemain = MNNPackedMatMulRemainFP32_RVV;
         gCoreFunction->MNNPackForMatMul_B = MNNPackForMatMul_B_RVV;
         gCoreFunction->MNNGetMatMulPackMode = MNNGetMatMulPackMode_RVV;
+        gCoreFunction->MNNAttentionMaskQK = MNNAttentionMaskQK_RVV;
         gCoreFunction->MNNPackC4ForMatMul_A = MNNPackC4ForMatMul_A_RVV;
         gCoreFunction->MNNPackCUnit = MNNPackCUnit_RVV;
         gCoreFunction->MNNUnpackCUnit = MNNUnpackCUnit_RVV;
